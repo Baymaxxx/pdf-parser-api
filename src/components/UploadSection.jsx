@@ -36,7 +36,6 @@ const DropZone = ({ parsing, dragging, onDragOver, onDragLeave, onDrop, onClick 
       <>
         <Loader2 size={40} className="text-[#1677ff] animate-spin mb-3" />
         <p className="text-[#1677ff] font-medium">正在解析 PDF，请稍候...</p>
-        <p className="text-gray-400 text-sm mt-1">如文件含图片，OCR识别可能需要较长时间</p>
       </>
     ) : (
       <>
@@ -58,6 +57,8 @@ const UploadSection = ({ onParsed, setParsing, parsing, setFileName }) => {
   const [status, setStatus] = useState('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [dragging, setDragging] = useState(false);
+  const [rawText, setRawText] = useState('');
+  const [showRaw, setShowRaw] = useState(false);
 
   const handleFile = async (file) => {
     if (!file || !file.name.endsWith('.pdf')) {
@@ -68,11 +69,21 @@ const UploadSection = ({ onParsed, setParsing, parsing, setFileName }) => {
     setFileName(file.name);
     setStatus('idle');
     setErrorMsg('');
+    setRawText('');
+    setShowRaw(false);
     setParsing(true);
     try {
-      const data = await parsePdfInvoice(file);
-      onParsed(data);
-      setStatus('success');
+      const result = await parsePdfInvoice(file);
+      setRawText(result.rawText || '');
+      if (result.data && result.data.length > 0) {
+        onParsed(result.data);
+        setStatus('success');
+      } else {
+        onParsed([]);
+        setStatus('error');
+        setErrorMsg('未能识别到商品数据，请点击"查看原始文本"确认 PDF 内容是否正确提取');
+        setShowRaw(true);
+      }
     } catch (e) {
       setStatus('error');
       setErrorMsg(e.message || '解析失败，请检查文件格式');
@@ -107,6 +118,22 @@ const UploadSection = ({ onParsed, setParsing, parsing, setFileName }) => {
         />
         <input ref={inputRef} type="file" accept=".pdf" className="hidden" onChange={onInputChange} />
         <StatusMessage status={status} errorMsg={errorMsg} />
+
+        {rawText && (
+          <div className="mt-3">
+            <button
+              className="text-xs text-[#1677ff] underline"
+              onClick={() => setShowRaw(v => !v)}
+            >
+              {showRaw ? '隐藏' : '查看'}原始提取文本（用于调试）
+            </button>
+            {showRaw && (
+              <pre className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 max-h-60 overflow-auto whitespace-pre-wrap break-all">
+                {rawText || '（无内容）'}
+              </pre>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

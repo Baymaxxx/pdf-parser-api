@@ -1,22 +1,18 @@
 /**
- * 纯原生 PDF 文本提取器
- * 不依赖任何第三方 PDF 库，直接解析 PDF 字节流中的文本内容
+ * 纯原生 PDF 文本提取器 v2
+ * 多策略提取，兼容更多 PDF 格式
  */
 
-/**
- * 解码 PDF 文本流中的字符串
- */
 function decodePdfString(str) {
-  // 处理十六进制编码 <hex>
   if (str.startsWith('<') && str.endsWith('>')) {
-    const hex = str.slice(1, -1);
+    const hex = str.slice(1, -1).replace(/\s/g, '');
     let result = '';
     for (let i = 0; i < hex.length; i += 2) {
-      result += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+      const code = parseInt(hex.substr(i, 2), 16);
+      if (!isNaN(code)) result += String.fromCharCode(code);
     }
     return result;
   }
-  // 处理转义字符
   return str
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '\r')
@@ -28,69 +24,98 @@ function decodePdfString(str) {
 }
 
 /**
- * 从 PDF 字节数组中提取所有文本内容
+ * 从 BT...ET 块中提取文本片段（带位置信息）
+ */
+function extractFromBtBlock(block) {
+  const texts = [];
+
+  // 匹配 Td/TD/Tm 位置指令 + 文本
+  const lines = block.split(/\r?\n/);
+  let currentY = 0;
+
+  for (const line of lines) {
+    // 匹配 Td/TD 位置
+    const tdMatch = line.match(/^([-\d.]+)\s+([-\d.]+)\s+Td/);
+    if (tdMatch) currentY += parseFloat(tdMatch[2]);
+
+    const tmMatch = line.match(/^[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s+Tm/);
+    if (tmMatch) currentY = parseFloat(tmMatch[2]);
+
+    // 匹配 (text) Tj
+    const tjMatch = line.match(/\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*Tj/);
+    if (tjMatch) {
+      const decoded = decodePdfString(tjMatch[1]);
+      texts.push({ text: decoded, y: currentY });
+    }
+
+    // 匹配 [(text)...] TJ
+    const tjArrayMatch = line.match(/\[([\s\S]*?)\]\s*TJ/);
+    if (tjArrayMatch) {
+      const parts = [];
+      const inner = tjArrayMatch[1];
+      const parenRegex = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
+      let m;
+      while ((m = parenRegex.exec(inner)) !== null) {
+        const decoded = decodePdfString(m[1]);
+        if (decoded.trim()) parts.push(decoded);
+      }
+      if (parts.length) texts.push({ text: parts.join(''), y: currentY });
+    }
+
+    // 匹配 ' 操作符 (换行并显示)
+    const primeMatch = line.match(/\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*'/);
+    if (primeMatch) {
+      const decoded = decodePdfString(primeMatch[1]);
+      texts.push({ text: decoded, y: currentY });
+    }
+  }
+
+  return texts;
+}
+
+/**
+ * 主提取函数：从 PDF 字节流提取文本行
  */
 export function extractTextFromPdfBytes(buffer) {
   const bytes = new Uint8Array(buffer);
-  // 将字节转换为 Latin-1 字符串（保留所有字节值）
   let content = '';
   for (let i = 0; i < bytes.length; i++) {
     content += String.fromCharCode(bytes[i]);
   }
 
-  const lines = [];
+  const allTexts = [];
 
-  // 提取所有 BT...ET 文本块
+  // 策略1：解压后的 stream 内容（已解压的 PDF）
   const btEtRegex = /BT([\s\S]*?)ET/g;
   let match;
-
   while ((match = btEtRegex.exec(content)) !== null) {
-    const block = match[1];
+    const fragments = extractFromBtBlock(match[1]);
+    allTexts.push(...fragments);
+  }
 
-    // 提取括号字符串 (text)
-    const parenRegex = /\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*(?:Tj|TJ|'|")/g;
-    let textMatch;
-    const blockTexts = [];
-
-    while ((textMatch = parenRegex.exec(block)) !== null) {
-      const decoded = decodePdfString(textMatch[1]);
-      const cleaned = decoded.replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '').trim();
-      if (cleaned) blockTexts.push(cleaned);
-    }
-
-    // 提取数组格式 [(text) ... ] TJ
-    const arrayRegex = /\[([\s\S]*?)\]\s*TJ/g;
-    let arrayMatch;
-    while ((arrayMatch = arrayRegex.exec(block)) !== null) {
-      const arrayContent = arrayMatch[1];
-      const innerParenRegex = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
-      let innerMatch;
-      const parts = [];
-      while ((innerMatch = innerParenRegex.exec(arrayContent)) !== null) {
-        const decoded = decodePdfString(innerMatch[1]);
-        const cleaned = decoded.replace(/[^\x20-\x7E\u00A0-\u00FF]/g, '').trim();
-        if (cleaned) parts.push(cleaned);
-      }
-      if (parts.length > 0) blockTexts.push(parts.join(' '));
-    }
-
-    if (blockTexts.length > 0) {
-      lines.push(blockTexts.join(' ').trim());
+  // 策略2：多行括号格式（某些 PDF 工具生成）
+  if (allTexts.length === 0) {
+    const parenRegex = /\(([^)\\]{1,200})\)\s*(?:Tj|TJ|'|")/g;
+    while ((match = parenRegex.exec(content)) !== null) {
+      const decoded = decodePdfString(match[1]);
+      const cleaned = decoded.replace(/[^\x20-\x7E\u00A0-\u00FF€]/g, '').trim();
+      if (cleaned.length > 1) allTexts.push({ text: cleaned, y: 0 });
     }
   }
 
-  // 同时尝试提取流中的字符串对象（用于某些 PDF 格式）
-  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  while ((match = streamRegex.exec(content)) !== null) {
-    const streamContent = match[1];
-    if (streamContent.includes('BT') || streamContent.includes('Tj')) continue; // 已处理
-    // 提取可打印 ASCII 文本段
-    const textSegments = streamContent.match(/[A-Za-z0-9\s\-\/.,:;()€%#+*]{6,}/g) || [];
-    for (const seg of textSegments) {
-      const cleaned = seg.trim();
-      if (cleaned.length > 5) lines.push(cleaned);
-    }
-  }
+  // 将文本对象转换为字符串行
+  const lines = allTexts
+    .map(t => t.text)
+    .map(t => t.replace(/[^\x20-\x7E\u00A0-\u00FF€]/g, '').trim())
+    .filter(t => t.length > 0);
 
-  return lines.filter(Boolean);
+  return lines;
+}
+
+/**
+ * 获取原始文本用于调试（保留更多内容）
+ */
+export function extractRawTextForDebug(buffer) {
+  const lines = extractTextFromPdfBytes(buffer);
+  return lines.join('\n');
 }
