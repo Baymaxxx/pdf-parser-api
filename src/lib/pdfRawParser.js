@@ -1,121 +1,93 @@
 /**
- * 纯原生 PDF 文本提取器 v2
- * 多策略提取，兼容更多 PDF 格式
+ * 使用 pdfjs-dist（已安装）通过 importScripts/动态加载方式解析 PDF
+ * 采用 pdfjs-dist 的标准 ES 模块导入，禁用 worker（主线程解析）
  */
 
-function decodePdfString(str) {
-  if (str.startsWith('<') && str.endsWith('>')) {
-    const hex = str.slice(1, -1).replace(/\s/g, '');
-    let result = '';
-    for (let i = 0; i < hex.length; i += 2) {
-      const code = parseInt(hex.substr(i, 2), 16);
-      if (!isNaN(code)) result += String.fromCharCode(code);
-    }
-    return result;
-  }
-  return str
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t')
-    .replace(/\\\(/g, '(')
-    .replace(/\\\)/g, ')')
-    .replace(/\\\\/g, '\\')
-    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
-}
+let pdfjsLib = null;
 
-/**
- * 从 BT...ET 块中提取文本片段（带位置信息）
- */
-function extractFromBtBlock(block) {
-  const texts = [];
+async function loadPdfjs() {
+  if (pdfjsLib) return pdfjsLib;
 
-  // 匹配 Td/TD/Tm 位置指令 + 文本
-  const lines = block.split(/\r?\n/);
-  let currentY = 0;
-
-  for (const line of lines) {
-    // 匹配 Td/TD 位置
-    const tdMatch = line.match(/^([-\d.]+)\s+([-\d.]+)\s+Td/);
-    if (tdMatch) currentY += parseFloat(tdMatch[2]);
-
-    const tmMatch = line.match(/^[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+([-\d.]+)\s+([-\d.]+)\s+Tm/);
-    if (tmMatch) currentY = parseFloat(tmMatch[2]);
-
-    // 匹配 (text) Tj
-    const tjMatch = line.match(/\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*Tj/);
-    if (tjMatch) {
-      const decoded = decodePdfString(tjMatch[1]);
-      texts.push({ text: decoded, y: currentY });
+  // 直接从 CDN 加载 pdfjs，避免 vite 打包问题
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById('pdfjs-script');
+    if (existing) {
+      // 已经在加载中，等待
+      const check = setInterval(() => {
+        if (window.pdfjsLib) {
+          clearInterval(check);
+          pdfjsLib = window.pdfjsLib;
+          resolve(pdfjsLib);
+        }
+      }, 100);
+      setTimeout(() => { clearInterval(check); reject(new Error('pdfjs 加载超时')); }, 10000);
+      return;
     }
 
-    // 匹配 [(text)...] TJ
-    const tjArrayMatch = line.match(/\[([\s\S]*?)\]\s*TJ/);
-    if (tjArrayMatch) {
-      const parts = [];
-      const inner = tjArrayMatch[1];
-      const parenRegex = /\(([^)\\]*(?:\\.[^)\\]*)*)\)/g;
-      let m;
-      while ((m = parenRegex.exec(inner)) !== null) {
-        const decoded = decodePdfString(m[1]);
-        if (decoded.trim()) parts.push(decoded);
+    const script = document.createElement('script');
+    script.id = 'pdfjs-script';
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.onload = () => {
+      if (window.pdfjsLib) {
+        // 禁用 worker，在主线程中运行
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+        pdfjsLib = window.pdfjsLib;
+        resolve(pdfjsLib);
+      } else {
+        reject(new Error('pdfjs 加载后 window.pdfjsLib 不存在'));
       }
-      if (parts.length) texts.push({ text: parts.join(''), y: currentY });
-    }
-
-    // 匹配 ' 操作符 (换行并显示)
-    const primeMatch = line.match(/\(([^)\\]*(?:\\.[^)\\]*)*)\)\s*'/);
-    if (primeMatch) {
-      const decoded = decodePdfString(primeMatch[1]);
-      texts.push({ text: decoded, y: currentY });
-    }
-  }
-
-  return texts;
+    };
+    script.onerror = () => reject(new Error('pdfjs CDN 加载失败'));
+    document.head.appendChild(script);
+  });
 }
 
 /**
- * 主提取函数：从 PDF 字节流提取文本行
+ * 从 PDF ArrayBuffer 中提取所有文本行
+ * @param {ArrayBuffer} buffer
+ * @returns {Promise<string[]>}
  */
-export function extractTextFromPdfBytes(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let content = '';
-  for (let i = 0; i < bytes.length; i++) {
-    content += String.fromCharCode(bytes[i]);
-  }
+export async function extractTextFromPdfBytes(buffer) {
+  const pdfjs = await loadPdfjs();
 
-  const allTexts = [];
+  // 使用假 worker 路径，触发 pdfjs 使用主线程 fake worker
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
-  // 策略1：解压后的 stream 内容（已解压的 PDF）
-  const btEtRegex = /BT([\s\S]*?)ET/g;
-  let match;
-  while ((match = btEtRegex.exec(content)) !== null) {
-    const fragments = extractFromBtBlock(match[1]);
-    allTexts.push(...fragments);
-  }
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer) });
+  const pdf = await loadingTask.promise;
 
-  // 策略2：多行括号格式（某些 PDF 工具生成）
-  if (allTexts.length === 0) {
-    const parenRegex = /\(([^)\\]{1,200})\)\s*(?:Tj|TJ|'|")/g;
-    while ((match = parenRegex.exec(content)) !== null) {
-      const decoded = decodePdfString(match[1]);
-      const cleaned = decoded.replace(/[^\x20-\x7E\u00A0-\u00FF€]/g, '').trim();
-      if (cleaned.length > 1) allTexts.push({ text: cleaned, y: 0 });
+  const allLines = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    // 按 Y 坐标分组，同一行的文本合并
+    const itemsByY = new Map();
+    for (const item of textContent.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const y = Math.round(item.transform[5]); // Y 坐标取整
+      if (!itemsByY.has(y)) itemsByY.set(y, []);
+      itemsByY.get(y).push({ x: item.transform[4], str: item.str });
+    }
+
+    // 按 Y 坐标降序排列（PDF 坐标系从底部开始，大Y值在上方）
+    const sortedYs = Array.from(itemsByY.keys()).sort((a, b) => b - a);
+
+    for (const y of sortedYs) {
+      const items = itemsByY.get(y).sort((a, b) => a.x - b.x);
+      const lineText = items.map(i => i.str).join(' ').trim();
+      if (lineText) allLines.push(lineText);
     }
   }
 
-  // 将文本对象转换为字符串行
-  const lines = allTexts
-    .map(t => t.text)
-    .map(t => t.replace(/[^\x20-\x7E\u00A0-\u00FF€]/g, '').trim())
-    .filter(t => t.length > 0);
-
-  return lines;
+  return allLines;
 }
 
 /**
- * 获取原始文本用于调试（保留更多内容）
+ * 获取原始文本用于调试
  */
-export function extractRawTextForDebug(buffer) {
-  const lines = extractTextFromPdfBytes(buffer);
+export async function extractRawTextForDebug(buffer) {
+  const lines = await extractTextFromPdfBytes(buffer);
   return lines.join('\n');
 }

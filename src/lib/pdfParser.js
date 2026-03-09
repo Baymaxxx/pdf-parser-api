@@ -10,14 +10,9 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/**
- * 将所有行合并，然后按常见分隔符重新切割
- */
 function normalizeLines(rawLines) {
-  // 合并所有文本，然后按空白行或明显的段落重新分割
   const result = [];
   for (const line of rawLines) {
-    // 按多个空格分割（PDF 中常见的列分隔）
     const parts = line.split(/\s{2,}/);
     for (const p of parts) {
       const t = p.trim();
@@ -27,30 +22,20 @@ function normalizeLines(rawLines) {
   return result;
 }
 
-/**
- * 尝试从文本行中识别 CRISPI Invoice 格式数据
- * 支持多种变体格式
- */
 function parseInvoiceLines(lines) {
   const results = [];
   const normalized = normalizeLines(lines);
 
-  // 打印调试信息到控制台
   console.log('=== PDF 提取的文本行 ===');
   normalized.forEach((l, i) => console.log(`[${i}] ${l}`));
   console.log('=== 共', normalized.length, '行 ===');
 
-  // 策略1：查找 货号(字母+数字) + 尺码 + 数量 + 价格 的模式
   for (let i = 0; i < normalized.length; i++) {
     const line = normalized[i];
 
-    // 匹配货号模式：字母前缀 + 4-6位数字，或纯8-10位数字
     const codePatterns = [
-      // TH5660 0115 格式（带空格分隔的前缀和后缀）
       /\b([A-Z]{1,4})(\d{4,6})\s+(\d{4})\b/,
-      // 56600115 格式（纯数字货号）
       /\b(\d{8,10})\b/,
-      // TH56600115 格式（连续字母+数字）
       /\b([A-Z]{1,4})(\d{8,10})\b/,
     ];
 
@@ -76,7 +61,6 @@ function parseInvoiceLines(lines) {
 
     if (!articleCode) continue;
 
-    // 提取品名（去除货号和价格后的文字部分）
     const priceMatch = line.match(/(\d{1,4}[.,]\d{2})\s*€?\s*$/);
     const price = priceMatch ? parseItalianNumber(priceMatch[1]) : 0;
     const description = line
@@ -85,16 +69,12 @@ function parseInvoiceLines(lines) {
       .replace(/\s+/g, ' ')
       .trim() || articleCode;
 
-    // 查找 TGL / QTA 行（向后查找5行）
     let tglLine = '', qtaLine = '';
-    let tglLineIdx = -1, qtaLineIdx = -1;
+    let qtaLineIdx = -1;
 
     for (let j = i + 1; j < Math.min(i + 8, normalized.length); j++) {
       const ln = normalized[j];
-      if (/\bTGL\b/i.test(ln) && !tglLine) {
-        tglLine = ln;
-        tglLineIdx = j;
-      }
+      if (/\bTGL\b/i.test(ln) && !tglLine) tglLine = ln;
       if (/\bQTA\b/i.test(ln) && !qtaLine) {
         qtaLine = ln;
         qtaLineIdx = j;
@@ -102,7 +82,6 @@ function parseInvoiceLines(lines) {
       if (tglLine && qtaLine) break;
     }
 
-    // 从 TGL 和 QTA 行提取尺码和数量
     if (tglLine && qtaLine) {
       const sizeTokens = tglLine.replace(/TGL/gi, '').trim().match(/[\d]+(?:[.,][\d]+)?/g) || [];
       const qtyTokens = qtaLine.replace(/QTA/gi, '').trim().match(/[\d]+(?:[.,][\d]+)?/g) || [];
@@ -121,13 +100,10 @@ function parseInvoiceLines(lines) {
         }
       }
 
-      // 跳过已处理的 TGL/QTA 行
       if (qtaLineIdx > 0) i = qtaLineIdx;
       continue;
     }
 
-    // 策略2：在同一行或相邻行中查找数量信息（简化格式）
-    // 查找：货号 + 品名 + 尺码 + 数量 + 单价 全在一行的格式
     const inlineMatch = line.match(/(\d{2,3}(?:\.\d)?)\s+(\d{1,3})\s+(\d{1,4}[.,]\d{2})/);
     if (inlineMatch) {
       const qty = parseFloat(inlineMatch[2]);
@@ -148,7 +124,7 @@ function parseInvoiceLines(lines) {
 
 /**
  * 主入口：解析 CRISPI Invoice PDF
- * @returns {{ data: Array, rawText: string }}
+ * @returns {Promise<{ data: Array, rawText: string }>}
  */
 export async function parsePdfInvoice(file) {
   let lines = [];
@@ -156,9 +132,10 @@ export async function parsePdfInvoice(file) {
 
   try {
     buffer = await readFileAsArrayBuffer(file);
-    lines = extractTextFromPdfBytes(buffer);
+    // extractTextFromPdfBytes 现在是异步的
+    lines = await extractTextFromPdfBytes(buffer);
   } catch (e) {
-    throw new Error('文件读取失败：' + e.message);
+    throw new Error('PDF 解析失败：' + e.message);
   }
 
   if (!lines || lines.length === 0) {
