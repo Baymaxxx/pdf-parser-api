@@ -10,136 +10,110 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-function normalizeLines(rawLines) {
-  const result = [];
-  for (const line of rawLines) {
-    const parts = line.split(/\s{2,}/);
-    for (const p of parts) {
-      const t = p.trim();
-      if (t) result.push(t);
-    }
-  }
-  return result;
-}
-
+/**
+ * 解析CRISPI Invoice格式
+ * 每个商品由3行组成：
+ * 1. 商品行: 货号前缀(如TH5660) 后缀(如0115) 描述 单价
+ * 2. TGL行: TGL 37 38 39 40 41
+ * 3. QTA行: QTA  2  3  4  3  2
+ */
 function parseInvoiceLines(lines) {
   const results = [];
-  const normalized = normalizeLines(lines);
 
-  console.log('=== PDF 提取的文本行 ===');
-  normalized.forEach((l, i) => console.log(`[${i}] ${l}`));
-  console.log('=== 共', normalized.length, '行 ===');
+  console.log('=== 开始解析，共', lines.length, '行 ===');
+  lines.forEach((l, i) => console.log(`[${i}] ${l}`));
 
-  for (let i = 0; i < normalized.length; i++) {
-    const line = normalized[i];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-    const codePatterns = [
-      /\b([A-Z]{1,4})(\d{4,6})\s+(\d{4})\b/,
-      /\b(\d{8,10})\b/,
-      /\b([A-Z]{1,4})(\d{8,10})\b/,
-    ];
+    // 匹配货号格式：字母前缀+数字(如TH5660) 空格 4位后缀(如0115)
+    // 或者 Articolo字段后跟货号
+    const articleMatch =
+      line.match(/\b([A-Z]{1,3})(\d{3,6})\s+(\d{4})\b/) ||
+      line.match(/\b([A-Z]{1,3})(\d{3,6})(\d{4})\b/);
 
-    let articleCode = null;
-    let matchedText = '';
+    if (!articleMatch) continue;
 
-    for (const pattern of codePatterns) {
-      const m = line.match(pattern);
-      if (m) {
-        if (pattern === codePatterns[0]) {
-          articleCode = buildArticleCode(m[1] + m[2], m[3]);
-          matchedText = m[0];
-        } else if (pattern === codePatterns[1]) {
-          articleCode = m[1];
-          matchedText = m[0];
-        } else {
-          articleCode = m[1] + m[2];
-          matchedText = m[0];
-        }
-        break;
-      }
-    }
+    // 构建货号：提取前缀数字部分拼接后缀
+    const prefixLetters = articleMatch[1];
+    const prefixNums = articleMatch[2];
+    const suffix = articleMatch[3];
+    const articleCode = buildArticleCode(prefixLetters + prefixNums, suffix);
 
-    if (!articleCode) continue;
-
-    const priceMatch = line.match(/(\d{1,4}[.,]\d{2})\s*€?\s*$/);
+    // 提取单价（意大利格式：如 89,90 或 1.234,56）
+    const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*€?\s*$/);
     const price = priceMatch ? parseItalianNumber(priceMatch[1]) : 0;
-    const description = line
-      .replace(matchedText, '')
+
+    // 提取描述（去掉货号和价格）
+    let description = line
+      .replace(articleMatch[0], '')
       .replace(priceMatch ? priceMatch[0] : '', '')
       .replace(/\s+/g, ' ')
-      .trim() || articleCode;
+      .trim();
+    if (!description) description = articleCode;
 
+    // 向后查找TGL行和QTA行（最多10行内）
     let tglLine = '', qtaLine = '';
-    let qtaLineIdx = -1;
+    let qtaIdx = -1;
 
-    for (let j = i + 1; j < Math.min(i + 8, normalized.length); j++) {
-      const ln = normalized[j];
-      if (/\bTGL\b/i.test(ln) && !tglLine) tglLine = ln;
-      if (/\bQTA\b/i.test(ln) && !qtaLine) {
-        qtaLine = ln;
-        qtaLineIdx = j;
-      }
+    for (let j = i + 1; j < Math.min(i + 12, lines.length); j++) {
+      const ln = lines[j];
+      if (!tglLine && /\bTGL\b/i.test(ln)) tglLine = ln;
+      if (!qtaLine && /\bQTA\b/i.test(ln)) { qtaLine = ln; qtaIdx = j; }
       if (tglLine && qtaLine) break;
     }
 
-    if (tglLine && qtaLine) {
-      const sizeTokens = tglLine.replace(/TGL/gi, '').trim().match(/[\d]+(?:[.,][\d]+)?/g) || [];
-      const qtyTokens = qtaLine.replace(/QTA/gi, '').trim().match(/[\d]+(?:[.,][\d]+)?/g) || [];
-      const len = Math.min(sizeTokens.length, qtyTokens.length);
+    if (!tglLine || !qtaLine) continue;
 
-      for (let k = 0; k < len; k++) {
-        const qty = parseFloat(qtyTokens[k]);
-        if (qty > 0) {
-          results.push({
-            articleCode,
-            description,
-            size: sizeTokens[k],
-            qty: qtyTokens[k],
-            price: price > 0 ? price.toFixed(2) : '0.00',
-          });
-        }
-      }
+    // 提取尺码列表（TGL后面的数字）
+    const sizes = tglLine.replace(/\bTGL\b/gi, '').trim().match(/\d+(?:[,.]\d+)?/g) || [];
+    // 提取数量列表（QTA后面的数字）
+    const qtys = qtaLine.replace(/\bQTA\b/gi, '').trim().match(/\d+(?:[,.]\d+)?/g) || [];
 
-      if (qtaLineIdx > 0) i = qtaLineIdx;
-      continue;
-    }
-
-    const inlineMatch = line.match(/(\d{2,3}(?:\.\d)?)\s+(\d{1,3})\s+(\d{1,4}[.,]\d{2})/);
-    if (inlineMatch) {
-      const qty = parseFloat(inlineMatch[2]);
+    const len = Math.min(sizes.length, qtys.length);
+    for (let k = 0; k < len; k++) {
+      const qty = parseFloat(qtys[k].replace(',', '.'));
       if (qty > 0) {
         results.push({
           articleCode,
           description,
-          size: inlineMatch[1],
-          qty: inlineMatch[2],
-          price: parseItalianNumber(inlineMatch[3]).toFixed(2),
+          size: sizes[k],
+          qty: String(qty),
+          price: price > 0 ? price.toFixed(2) : '0.00',
         });
       }
     }
+
+    if (qtaIdx > 0) i = qtaIdx;
   }
 
+  console.log('=== 解析完成，找到', results.length, '条记录 ===');
   return results;
 }
 
 /**
- * 主入口：解析 CRISPI Invoice PDF
+ * 主入口：解析CRISPI Invoice PDF
+ * @param {File} file
+ * @param {Function} onProgress
  * @returns {Promise<{ data: Array, rawText: string }>}
  */
-export async function parsePdfInvoice(file) {
-  let lines = [];
+export async function parsePdfInvoice(file, onProgress) {
   let buffer;
-
   try {
     buffer = await readFileAsArrayBuffer(file);
-    // extractTextFromPdfBytes 现在是异步的
-    lines = await extractTextFromPdfBytes(buffer);
   } catch (e) {
-    throw new Error('PDF 解析失败：' + e.message);
+    throw new Error('文件读取失败：' + e.message);
+  }
+
+  let lines;
+  try {
+    lines = await extractTextFromPdfBytes(buffer, onProgress);
+  } catch (e) {
+    throw new Error('PDF解析失败：' + e.message);
   }
 
   if (!lines || lines.length === 0) {
-    throw new Error('未能从 PDF 中提取到文本内容，请确认文件格式正确（不支持纯扫描图片 PDF）');
+    throw new Error('未能从PDF中提取到文本内容');
   }
 
   const rawText = lines.join('\n');
