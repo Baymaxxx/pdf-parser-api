@@ -1,80 +1,31 @@
 import { buildArticleCode, parseItalianNumber } from './invoiceUtils';
+import { extractTextFromPdfBytes } from './pdfRawParser';
 
-// 动态加载 pdfjs，禁用 worker 在主线程运行
-async function getPdfjsLib() {
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.js');
-  // 完全禁用 worker，在主线程运行
-  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
-  return pdfjsLib;
-}
-
-// 提取PDF所有页面的文本行
-async function extractTextLines(file) {
-  const pdfjsLib = await getPdfjsLib();
-  const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
-    useWorkerFetch: false,
-    isEvalSupported: false,
-    useSystemFonts: true,
+/**
+ * 从 File 对象读取 ArrayBuffer
+ */
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsArrayBuffer(file);
   });
-  const pdf = await loadingTask.promise;
-  const allLines = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-
-    // 按Y坐标分组，合并同行文字
-    const yMap = new Map();
-    for (const item of textContent.items) {
-      if (!item.str?.trim()) continue;
-      const y = Math.round(item.transform[5]);
-      if (!yMap.has(y)) yMap.set(y, []);
-      yMap.get(y).push({ x: item.transform[4], text: item.str });
-    }
-
-    // 按Y从大到小（页面从上到下），每行按X排序拼接
-    const sortedYs = Array.from(yMap.keys()).sort((a, b) => b - a);
-    for (const y of sortedYs) {
-      const line = yMap.get(y).sort((a, b) => a.x - b.x).map(i => i.text).join(' ');
-      allLines.push(line.trim());
-    }
-  }
-  return allLines;
 }
 
-// 尝试OCR识别（当文本提取不到有效内容时）
-async function extractTextByOCR(file) {
-  const pdfjsLib = await getPdfjsLib();
-  const Tesseract = await import('tesseract.js');
-  const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
-    useWorkerFetch: false,
-    isEvalSupported: false,
-    useSystemFonts: true,
-  });
-  const pdf = await loadingTask.promise;
-  const allLines = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 2.0 });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    const imageData = canvas.toDataURL('image/png');
-    const { data: { text } } = await Tesseract.default.recognize(imageData, 'ita+eng');
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    allLines.push(...lines);
-  }
-  return allLines;
+/**
+ * 解析 TGL/QTA 行，提取数值列表
+ */
+function parseSizeQtyLine(line, type) {
+  if (!line) return [];
+  const cleaned = line.replace(new RegExp(type, 'gi'), '').trim();
+  const tokens = cleaned.match(/\d+(?:[.,]\d+)?/g) || [];
+  return tokens;
 }
 
-// 解析行数据，提取商品信息
+/**
+ * 解析行数据，提取商品信息
+ */
 function parseInvoiceLines(lines) {
   const results = [];
   let i = 0;
@@ -82,7 +33,7 @@ function parseInvoiceLines(lines) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // 匹配商品描述行：含有类似 TH5660 或字母+数字 形式的 Articolo 字段
+    // 匹配商品描述行：含有类似 TH5660 或字母+数字形式的 Articolo 字段
     const articleMatch = line.match(/\b([A-Z]{1,4}\d{4,6})\s+(\d{4})\b/);
     if (articleMatch) {
       const prefix = articleMatch[1];
@@ -127,35 +78,21 @@ function parseInvoiceLines(lines) {
   return results;
 }
 
-// 解析 TGL/QTA 行，提取数值列表
-function parseSizeQtyLine(line, type) {
-  if (!line) return [];
-  const cleaned = line.replace(new RegExp(type, 'gi'), '').trim();
-  const tokens = cleaned.match(/\d+(?:[.,]\d+)?/g) || [];
-  return tokens;
-}
-
-// 主入口
+/**
+ * 主入口：解析 CRISPI Invoice PDF
+ */
 export async function parsePdfInvoice(file) {
   let lines = [];
-  let parseError = null;
 
   try {
-    lines = await extractTextLines(file);
+    const buffer = await readFileAsArrayBuffer(file);
+    lines = extractTextFromPdfBytes(buffer);
   } catch (e) {
-    parseError = e;
-    console.warn('文本提取失败，尝试 OCR：', e);
+    throw new Error('文件读取失败：' + e.message);
   }
 
-  const hasContent = lines.some(l => /[A-Z]{1,4}\d{4,6}/.test(l));
-
-  if (!hasContent) {
-    // 文本提取无效，尝试 OCR
-    try {
-      lines = await extractTextByOCR(file);
-    } catch (e) {
-      throw new Error('PDF 解析失败：' + (parseError?.message || e.message));
-    }
+  if (!lines || lines.length === 0) {
+    throw new Error('未能从 PDF 中提取到文本内容，请确认文件格式正确');
   }
 
   const data = parseInvoiceLines(lines);
@@ -163,5 +100,6 @@ export async function parsePdfInvoice(file) {
   if (data.length === 0) {
     throw new Error('未能识别到商品数据，请确认文件为 CRISPI Invoice 格式');
   }
+
   return data;
 }
