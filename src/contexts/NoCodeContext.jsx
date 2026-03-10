@@ -64,7 +64,7 @@ export const NoCodeProvider = ({ children }) => {
           env: import.meta.env.MODE,
           chatId: import.meta.env.VITE_CHAT_ID,
           chatEnv: import.meta.env.VITE_CHAT_ENV,
-          disableSSO: import.meta.env.VITE_SSO_DISABLED === 'true',
+          disableSSO: true,
           supabase: supabaseConfig?.supabase,
         });
 
