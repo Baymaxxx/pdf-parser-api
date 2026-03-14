@@ -3124,18 +3124,18 @@ path-scurry@^1.11.1:
     lru-cache "^10.2.0"
     minipass "^5.0.0 || ^6.0.2 || ^7.0.0"
 
-path2d@^0.2.0:
-  version "0.2.2"
-  resolved "http://r.npm.sankuai.com/path2d/download/path2d-0.2.2.tgz"
-  integrity sha1-zIXWHteCfnhjou42cT1LUxWj2F0=
+path2d-polyfill@^2.0.1:
+  version "2.0.1"
+  resolved "http://r.npm.sankuai.com/path2d-polyfill/download/path2d-polyfill-2.0.1.tgz"
+  integrity sha1-JMVUpzj0JwDWlhmSv18QSWcvI5E=
 
-pdfjs-dist@4.4.168:
-  version "4.4.168"
-  resolved "http://r.npm.sankuai.com/pdfjs-dist/download/pdfjs-dist-4.4.168.tgz"
-  integrity sha1-RIdxY3ajPGh1PtN/eCrpHRye+Po=
+pdfjs-dist@3.11.174:
+  version "3.11.174"
+  resolved "http://r.npm.sankuai.com/pdfjs-dist/download/pdfjs-dist-3.11.174.tgz"
+  integrity sha1-X/R7gPLVjI3Q109hXnxqfn5wTEs=
   optionalDependencies:
     canvas "^2.11.2"
-    path2d "^0.2.0"
+    path2d-polyfill "^2.0.1"
 
 picocolors@^1.1.1:
   version "1.1.1"
