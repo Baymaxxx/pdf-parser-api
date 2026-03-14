@@ -3,8 +3,13 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
+# 安装系统依赖（用于 canvas 等原生模块）
+RUN apk add --no-cache python3 make g++ cairo-dev pango-dev libjpeg-turbo-dev giflib-dev
+
 # 复制依赖文件
-COPY package*.json ./
+COPY package*.json .npmrc ./
+
+# 使用 npm 安装依赖
 RUN npm install
 
 # 复制源代码
