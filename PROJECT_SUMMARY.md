@@ -208,7 +208,7 @@ docker-compose up -d
 
 ## 🔗 相关链接
 
-- **项目位置**: `/Users/zhongshuai/Downloads/crispi-invoice-parser`
+- **项目位置**: `/Users/zhongshuai/Documents/study/crispi-invoice-parser`
 - **前端地址**: http://localhost:8080
 - **后端地址**: http://localhost:3001
 

@@ -28,7 +28,7 @@ crispi-invoice-parser/
 ### 方式 1: 一键启动（推荐）
 
 ```bash
-cd /Users/zhongshuai/Downloads/crispi-invoice-parser
+cd /Users/zhongshuai/Documents/study/crispi-invoice-parser
 ./start-dev.sh
 ```
 
