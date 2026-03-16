@@ -34,6 +34,12 @@ async function parseViaApi(file) {
   const resp = await fetch(API_URL, {
     method: 'POST',
     body: formData,
+    // 禁用缓存，确保每次都发送新请求
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+    },
   });
 
   if (!resp.ok) {
@@ -49,13 +55,12 @@ async function parseViaApi(file) {
   return result.data;
 }
 
-// 提取PDF所有页面的文本行
-async function extractTextLines(file) {
+// 提取PDF所有页面的文本行（接收预读好的 Uint8Array，避免多次读取 File 流）
+async function extractTextLines(pdfData) {
   const pdfjsLib = await getPdfJs();
-  const arrayBuffer = await file.arrayBuffer();
 
   const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
+    data: pdfData,
     useWorkerFetch: false,
     isEvalSupported: false,
     useSystemFonts: true,
@@ -85,14 +90,13 @@ async function extractTextLines(file) {
   return allLines;
 }
 
-// 尝试OCR识别(当文本提取不到有效内容时)
-async function extractTextByOCR(file) {
+// 尝试OCR识别（接收预读好的 Uint8Array，避免多次读取 File 流）
+async function extractTextByOCR(pdfData) {
   const Tesseract = await import('tesseract.js');
   const pdfjsLib = await getPdfJs();
-  const arrayBuffer = await file.arrayBuffer();
 
   const loadingTask = pdfjsLib.getDocument({
-    data: new Uint8Array(arrayBuffer),
+    data: pdfData,
     useWorkerFetch: false,
     isEvalSupported: false,
     useSystemFonts: true,
@@ -177,11 +181,16 @@ function parseSizeQtyLine(line, type) {
 
 // 方案2: 浏览器端解析（fallback）
 async function parseInBrowser(file) {
+  // 在入口处统一读取一次 arrayBuffer，后续所有操作共用同一份数据
+  // 避免 File 流被多次读取导致第二次返回空数据的缓存问题
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfData = new Uint8Array(arrayBuffer);
+
   let lines = [];
   let parseError = null;
 
   try {
-    lines = await extractTextLines(file);
+    lines = await extractTextLines(pdfData);
   } catch (e) {
     parseError = e;
     console.warn('文本提取失败,尝试OCR:', e);
@@ -191,7 +200,7 @@ async function parseInBrowser(file) {
 
   if (!hasContent || parseError) {
     try {
-      lines = await extractTextByOCR(file);
+      lines = await extractTextByOCR(pdfData);
     } catch (e) {
       throw new Error('PDF解析和OCR均失败,请确认文件格式是否正确');
     }

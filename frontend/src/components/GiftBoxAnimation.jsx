@@ -639,14 +639,16 @@ function drawStarryBackground(ctx, W, H, bgStars, now) {
 
 // ─── 主组件 ───────────────────────────────────────────────────
 // phase prop 只在挂载时读取一次，后续动画完全由内部驱动
-const GiftBoxAnimation = ({ progressMsg, fileName, onAnimationDone, onReadyForResult }) => {
+const GiftBoxAnimation = ({ progressMsg, fileName, onAnimationDone, onReadyForResult, resultReady = false }) => {
   const canvasRef = useRef(null);
   const bgStarsRef = useRef([]);
   // 用 ref 保持回调最新引用，避免闭包捕获旧属性
   const onAnimationDoneRef = useRef(onAnimationDone);
   const onReadyForResultRef = useRef(onReadyForResult);
+  const resultReadyRef = useRef(resultReady);
   useEffect(() => { onAnimationDoneRef.current = onAnimationDone; }, [onAnimationDone]);
   useEffect(() => { onReadyForResultRef.current = onReadyForResult; }, [onReadyForResult]);
+  useEffect(() => { resultReadyRef.current = resultReady; }, [resultReady]);
   const stateRef = useRef({
     internalPhase: 'idle',
     startTime: null,
@@ -1043,8 +1045,9 @@ const GiftBoxAnimation = ({ progressMsg, fileName, onAnimationDone, onReadyForRe
       // ══════════════════════════════════════════════════════
       else if (s.internalPhase === 'done') {
         const doneElapsed = now - s.startTime;
-        // 3s 后开始淡出背景遮罩
-        const fadeOutT = clamp((doneElapsed - 3000) / 1200, 0, 1);
+        // 等待 OCR 结果就绪后，再等 1.5s 开始淡出（让用户看到降落伞动画）
+        const waitOffset = resultReadyRef.current ? 1500 : Infinity;
+        const fadeOutT = clamp((doneElapsed - waitOffset) / 1200, 0, 1);
         s.fadeOutAlpha = fadeOutT;
         // 全黑后再等一帧再卸载，避免闪烁
         if (fadeOutT >= 1 && !s.dismissed) {
